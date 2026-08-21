@@ -1,0 +1,25 @@
+# Ambiente virtual
+.venv/
+venv/
+env/
+
+# Bytecode e caches do Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Logs gerados pelo monitor
+*.log
+monitor.log
+nohup.out
+
+# Configurações locais de editor
+.vscode/
+.idea/
+
+# Arquivos de sistema
+.DS_Store
+Thumbs.db
+
+# Cache do Selenium Manager (caso alguém aponte para cá)
+.cache/
