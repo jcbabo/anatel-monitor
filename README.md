@@ -9,7 +9,15 @@ que **você já deixou aberta e logada** no seu Chrome, usando o protocolo de
 depuração remota (CDP). Isso é importante porque a página exige login e hCaptcha —
 tudo isso continua sendo feito por você, manualmente, uma única vez.
 
+Além da aba do SEC, o script também localiza a aba do portal de acesso
+(`https://apps.anatel.gov.br/acesso/`) e dá refresh nela a cada ciclo, só para
+manter a sessão de login viva. Assim que a agenda é encontrada, o refresh da aba
+do SEC é pausado (para preservar a tela com a vaga), mas a aba de acesso continua
+sendo atualizada — evitando perder a vaga por timeout de sessão enquanto você
+finaliza a inscrição manualmente.
+
 - **Página monitorada:** `https://sistemas.anatel.gov.br/SEC/Inscricao/Incluir/Tela.asp`
+- **Aba de sessão mantida viva:** `https://apps.anatel.gov.br/acesso/`
 - **Sinal de "sem vaga":** a frase `Não há agendas disponíveis no momento.` na seção *Relação de Prova*
 - **Sinal de "tem vaga":** aquela frase sumir, ou aparecerem datas `dd/mm/aaaa` na tela
 
@@ -167,6 +175,11 @@ Nessa janela do Chrome:
    *Relação de Prova*.
 4. **Deixe essa aba aberta.** Você pode usar outras abas e até minimizar a janela;
    o script troca o foco para a aba correta sozinho quando precisa.
+5. **Deixe também aberta a aba do portal de acesso**
+   (`https://apps.anatel.gov.br/acesso/`), aquela de onde você clicou para abrir o
+   SEC. O script a localiza automaticamente e dá refresh nela junto, para a sessão
+   não expirar. Se essa aba não existir, o script apenas avisa e segue sem esse
+   recurso (não é obrigatória).
 
 ### 3.3. Confirmar que está tudo pronto
 
@@ -331,7 +344,8 @@ pkill -f monitor.py
 
 ```
 usage: monitor.py [-h] [--host HOST] [--porta PORTA] [--min MINIMO]
-                  [--max MAXIMO] [--url URL] [--alerta-js] [--sem-refresh]
+                  [--max MAXIMO] [--url URL] [--url-sessao URL_SESSAO]
+                  [--sem-aba-sessao] [--alerta-js] [--sem-refresh]
                   [--parar-ao-achar]
 ```
 
@@ -341,10 +355,12 @@ usage: monitor.py [-h] [--host HOST] [--porta PORTA] [--min MINIMO]
 | `--porta PORTA` | `9222` | Porta de depuração remota. Precisa bater com a usada no `--remote-debugging-port`. |
 | `--min MINIMO` | `30` | Tempo **mínimo**, em segundos, entre um F5 e o próximo. |
 | `--max MAXIMO` | `60` | Tempo **máximo**, em segundos. O intervalo real é sorteado aleatoriamente entre `--min` e `--max` a cada ciclo, para o tráfego não ficar com cara de robô. |
-| `--url URL` | a URL do SEC | Fragmento de URL usado para localizar a aba certa entre as abas abertas. |
-| `--alerta-js` | desligado | Dispara um `window.alert()` de verdade na aba quando achar agenda. Como um alert aberto trava qualquer comando do Selenium, o script **encerra logo após disparar**. |
-| `--sem-refresh` | desligado | Só inspeciona a página, sem dar F5. Útil para testar a detecção sem mexer na sua sessão. |
-| `--parar-ao-achar` | desligado | Encerra o monitor no primeiro alerta, em vez de continuar monitorando. |
+| `--url URL` | a URL do SEC | Fragmento de URL usado para localizar a aba do SEC entre as abas abertas. |
+| `--url-sessao URL_SESSAO` | `https://apps.anatel.gov.br/acesso/` | Fragmento de URL usado para localizar a aba de login/sessão a manter viva. |
+| `--sem-aba-sessao` | desligado | Desativa por completo o refresh da aba de sessão (o script só cuida da aba do SEC, como antes). |
+| `--alerta-js` | desligado | Dispara um `window.alert()` de verdade na aba do SEC quando achar agenda. Como um alert aberto trava comandos do Selenium **naquela aba**, o script continua funcionando normalmente na aba de sessão (só não interage mais com a aba do SEC). |
+| `--sem-refresh` | desligado | Só inspeciona a página do SEC, sem dar F5 nela. A aba de sessão continua sendo atualizada normalmente. |
+| `--parar-ao-achar` | desligado | Encerra o monitor por completo no primeiro alerta. Por padrão (sem essa flag) o script **continua rodando** só para manter a aba de sessão atualizada, mesmo depois de avisar. |
 
 Exemplos:
 
@@ -357,6 +373,9 @@ Exemplos:
 
 # outra porta de depuração
 .venv/bin/python monitor.py --porta 9333
+
+# sem cuidar da aba de sessao, so monitorando o SEC (comportamento antigo)
+.venv/bin/python monitor.py --sem-aba-sessao
 ```
 
 ---
@@ -379,8 +398,15 @@ para maximizar a chance de você perceber:
      monitor **continua rodando**.
    - **Com `--alerta-js`:** dispara um `window.alert()` clássico. Ele é chamado
      dentro de um `setTimeout` para não travar a chamada do Selenium, mas, enquanto
-     a caixa estiver aberta, o navegador não aceita mais comandos — por isso o
-     script **encerra em seguida** e deixa o alerta na tela esperando o seu OK.
+     a caixa estiver aberta, o Selenium não consegue mais interagir **com aquela
+     aba**. Por isso o script para de dar refresh na aba do SEC (a tela do alerta
+     fica preservada), mas continua rodando e atualizando a aba de sessão em
+     segundo plano, a menos que você use `--parar-ao-achar`.
+
+Depois que a agenda é encontrada, o script pausa o refresh da aba do SEC (para não
+perder o estado/alerta) mas mantém a aba de sessão sendo atualizada a cada ciclo,
+justamente para você não perder a vaga por queda de sessão enquanto termina a
+inscrição manualmente.
 
 ---
 
@@ -441,13 +467,26 @@ rm -rf ~/.cache/selenium
 
 ### `Nenhuma aba aberta com a URL contendo '...'`
 
-A aba do SEC foi fechada, ou a URL mudou. Reabra
+A aba do SEC (ou a de sessão) foi fechada, ou a URL mudou. Reabra
 `https://sistemas.anatel.gov.br/SEC/Inscricao/Incluir/Tela.asp` na janela do Chrome
 com depuração ligada. Confira com:
 
 ```bash
 curl -s http://localhost:9222/json/list | grep -o '"url": "[^"]*anatel[^"]*"'
 ```
+
+### O que acontece se eu fechar uma das duas abas?
+
+- **Fechar a aba do SEC:** no próximo ciclo o script tenta trocar de foco para ela,
+  falha, e então varre todas as abas abertas procurando outra com a mesma URL. Se
+  você reabrir a tela do SEC antes do próximo ciclo, ele reconecta sozinho e segue
+  monitorando. Se não encontrar nenhuma, o script **encerra por completo**
+  (`Aba perdida. Reabra a pagina e rode o monitor novamente.`) — e, como o
+  processo termina, a aba de sessão também para de ser atualizada.
+- **Fechar a aba de sessão:** o script tenta reconectar da mesma forma, mas de
+  forma tolerante — se não encontrar outra aba com essa URL, ele apenas desliga o
+  refresh da sessão (`Aba de sessao perdida; nao sera mais atualizada.`) e
+  **continua monitorando a aba do SEC normalmente**, sem encerrar.
 
 ### `tela inesperada (sessao expirada ou pagina de erro?)`
 
@@ -493,7 +532,7 @@ anatel-monitor/
 | `normalizar()` | Tira acentos, baixa a caixa e colapsa espaços do texto da página |
 | `detectar_versao()` | Descobre a versão do Chrome remoto para casar o ChromeDriver |
 | `conectar()` | Anexa o Selenium ao Chrome já aberto via `debuggerAddress` |
-| `selecionar_aba()` | Encontra e foca a aba cuja URL contém o fragmento buscado |
+| `selecionar_aba()` | Encontra e foca a aba cuja URL contém o fragmento buscado, devolvendo seu handle |
 | `coletar_estado()` | Extrai o texto normalizado e as datas visíveis na página |
 | `tem_agenda()` | Aplica as regras de decisão descritas na [seção 8](#8-como-a-detecção-funciona) |
 | `alertar_no_navegador()` | Injeta a faixa vermelha ou dispara o `window.alert()` |
