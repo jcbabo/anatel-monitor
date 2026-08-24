@@ -30,8 +30,11 @@ from selenium.webdriver.common.by import By
 
 URL_ALVO = "https://sistemas.anatel.gov.br/SEC/Inscricao/Incluir/Tela.asp"
 
+# Aba de login/SSO que precisa ser mantida viva para a sessao nao expirar.
+URL_SESSAO = "https://apps.anatel.gov.br/acesso/"
+
 # Frases que indicam que NAO ha agenda. Se todas sumirem, avisamos.
-# Escreva SEM acento e em minusculas: a comparacao usa o texto normalizado.
+# Escrever SEM acento e em minusculas: a comparacao usa o texto normalizado.
 PADROES_SEM_AGENDA = [
     "nao ha agenda",
     "nao existe agenda",
@@ -44,8 +47,8 @@ PADROES_SEM_AGENDA = [
     "nenhum resultado",
 ]
 
-# Secao da pagina onde a agenda aparece; serve para confirmar que a
-# sessao continua valida e a tela certa foi carregada.
+# serve para confirmar que a sessao continua valida e a tela certa foi 
+# carregada.
 MARCADOR_TELA = "relacao de prova"
 
 # Frases que indicam agenda disponivel.
@@ -83,7 +86,6 @@ def detectar_versao(host: str, porta: int) -> str | None:
     match = re.search(r"Chrome/(\d+)", dados.get("Browser", ""))
     return match.group(1) if match else None
 
-
 def conectar(host: str, porta: int) -> webdriver.Chrome:
     options = Options()
     options.add_experimental_option("debuggerAddress", f"{host}:{porta}")
@@ -92,25 +94,22 @@ def conectar(host: str, porta: int) -> webdriver.Chrome:
         options.browser_version = versao
     return webdriver.Chrome(options=options)
 
-
-def selecionar_aba(driver: webdriver.Chrome, fragmento_url: str) -> None:
-    """Coloca o foco na aba cuja URL contem o fragmento informado."""
+def selecionar_aba(driver: webdriver.Chrome, fragmento_url: str) -> str:
+    """Coloca o foco na aba cuja URL contem o fragmento e devolve seu handle."""
     for handle in driver.window_handles:
         driver.switch_to.window(handle)
         if fragmento_url.lower() in driver.current_url.lower():
-            return
+            return handle
     raise RuntimeError(
         f"Nenhuma aba aberta com a URL contendo '{fragmento_url}'. "
         "Abra a pagina no navegador antes de rodar o monitor."
     )
-
 
 def coletar_estado(driver: webdriver.Chrome) -> tuple[str, list[str]]:
     """Retorna (texto normalizado da pagina, datas visiveis no corpo)."""
     corpo = driver.find_element(By.TAG_NAME, "body").text
     datas = re.findall(r"\d{2}/\d{2}/\d{4}", corpo)
     return normalizar(corpo), datas
-
 
 def tem_agenda(texto: str, datas: list[str]) -> tuple[bool, str]:
     if MARCADOR_TELA not in texto:
@@ -123,7 +122,6 @@ def tem_agenda(texto: str, datas: list[str]) -> tuple[bool, str]:
         if padrao in texto:
             return True, f"texto encontrado: '{padrao}'"
     return True, "a mensagem de 'nao ha agendas' desapareceu da tela"
-
 
 def alertar_no_navegador(driver: webdriver.Chrome, mensagem: str,
                          usar_alert: bool) -> None:
@@ -148,7 +146,6 @@ def alertar_no_navegador(driver: webdriver.Chrome, mensagem: str,
         driver.execute_script(script)
     except (WebDriverException, UnexpectedAlertPresentException) as exc:
         log(f"Nao consegui exibir o aviso no navegador: {exc}")
-
 
 def alertar(mensagem: str) -> None:
     # Bipe do terminal (varias vezes para chamar atencao)
@@ -183,25 +180,29 @@ def alertar(mensagem: str) -> None:
         except OSError:
             pass
 
-
 def main() -> int:
     parser = argparse.ArgumentParser(description="Monitor de agenda Anatel/SEC")
     parser.add_argument("--host", default="localhost",
                         help="host do navegador (ex.: IP do Windows visto do WSL)")
     parser.add_argument("--porta", type=int, default=9222,
                         help="porta de depuracao remota do navegador")
-    parser.add_argument("--min", dest="minimo", type=float, default=30.0,
+    parser.add_argument("--min", dest="minimo", type=float, default=45.0,
                         help="intervalo minimo entre refreshes (padrao: 30s)")
-    parser.add_argument("--max", dest="maximo", type=float, default=50.0,
+    parser.add_argument("--max", dest="maximo", type=float, default=100.0,
                         help="intervalo maximo entre refreshes (padrao: 50s)")
     parser.add_argument("--url", default=URL_ALVO,
                         help="fragmento da URL da aba a monitorar")
+    parser.add_argument("--url-sessao", default=URL_SESSAO,
+                        help="fragmento da URL da aba de login/sessao a manter viva")
+    parser.add_argument("--sem-aba-sessao", action="store_true",
+                        help="desativa o refresh da aba de sessao")
     parser.add_argument("--alerta-js", action="store_true",
                         help="usa window.alert() na aba (bloqueia ate clicar OK)")
     parser.add_argument("--sem-refresh", action="store_true",
                         help="so inspeciona a pagina, sem dar F5 (util com captcha)")
     parser.add_argument("--parar-ao-achar", action="store_true",
-                        help="encerra o monitor no primeiro alerta")
+                        help="encerra o monitor por completo no primeiro alerta "
+                             "(por padrao ele continua rodando so para manter a sessao viva)")
     args = parser.parse_args()
 
     if args.minimo > args.maximo:
@@ -215,46 +216,74 @@ def main() -> int:
         return 1
 
     try:
-        selecionar_aba(driver, args.url)
+        handle_agenda = selecionar_aba(driver, args.url)
     except (RuntimeError, WebDriverException) as exc:
         log(str(exc))
         return 1
 
+    handle_sessao: str | None = None
+    if not args.sem_aba_sessao:
+        try:
+            handle_sessao = selecionar_aba(driver, args.url_sessao)
+        except (RuntimeError, WebDriverException) as exc:
+            log(f"Aviso: {exc} A aba de sessao nao sera atualizada.")
+
+    driver.switch_to.window(handle_agenda)
     log(f"Monitorando {driver.current_url}")
+    if handle_sessao:
+        log("Aba de sessao encontrada: sera atualizada junto para evitar timeout.")
     log(f"Refresh a cada {args.minimo:.0f}-{args.maximo:.0f}s (aleatorio). "
         "Ctrl+C para parar.")
 
     tentativa = 0
+    agenda_encontrada = False
     while True:
         tentativa += 1
-        try:
-            if not args.sem_refresh:
-                driver.refresh()
-                time.sleep(3)  # deixa a pagina ASP terminar de renderizar
-            texto, datas = coletar_estado(driver)
-            achou, motivo = tem_agenda(texto, datas)
-            if achou:
-                log(f"*** POSSIVEL AGENDA DISPONIVEL *** ({motivo})")
-                mensagem = f"Agenda disponivel na Anatel!\n{motivo}"
-                alertar_no_navegador(driver, mensagem, args.alerta_js)
-                alertar(mensagem)
-                if args.parar_ao_achar or args.alerta_js:
-                    # Com window.alert aberto o Selenium nao consegue continuar.
-                    log("Monitor encerrado: confira a aba do navegador.")
-                    return 0
-            else:
-                log(f"tentativa {tentativa}: nada ainda ({motivo})")
-        except WebDriverException as exc:
-            log(f"Erro no navegador: {exc.msg}. Tentando reconectar na aba...")
+        if not agenda_encontrada:
             try:
-                selecionar_aba(driver, args.url)
-            except (RuntimeError, WebDriverException):
-                log("Aba perdida. Reabra a pagina e rode o monitor novamente.")
-                return 1
+                driver.switch_to.window(handle_agenda)
+                if not args.sem_refresh:
+                    driver.refresh()
+                    time.sleep(3)  # deixa a pagina ASP terminar de renderizar
+                texto, datas = coletar_estado(driver)
+                achou, motivo = tem_agenda(texto, datas)
+                if achou:
+                    log(f"*** POSSIVEL AGENDA DISPONIVEL *** ({motivo})")
+                    mensagem = f"Agenda disponivel na Anatel!\n{motivo}"
+                    alertar_no_navegador(driver, mensagem, args.alerta_js)
+                    alertar(mensagem)
+                    agenda_encontrada = True
+                    if args.parar_ao_achar:
+                        log("Monitor encerrado: confira a aba do navegador.")
+                        return 0
+                    log("Refresh da aba de agenda pausado. "
+                        "A aba de sessao continua sendo atualizada.")
+                else:
+                    log(f"tentativa {tentativa}: nada ainda ({motivo})")
+            except WebDriverException as exc:
+                log(f"Erro no navegador: {exc.msg}. Tentando reconectar na aba...")
+                try:
+                    handle_agenda = selecionar_aba(driver, args.url)
+                except (RuntimeError, WebDriverException):
+                    log("Aba perdida. Reabra a pagina e rode o monitor novamente.")
+                    return 1
+
+        if handle_sessao:
+            try:
+                driver.switch_to.window(handle_sessao)
+                driver.refresh()
+            except WebDriverException as exc:
+                log(f"Erro ao atualizar a aba de sessao: {exc.msg}. "
+                    "Tentando reconectar...")
+                try:
+                    handle_sessao = selecionar_aba(driver, args.url_sessao)
+                except (RuntimeError, WebDriverException):
+                    log("Aba de sessao perdida; nao sera mais atualizada.")
+                    handle_sessao = None
+
         espera = random.uniform(args.minimo, args.maximo)
         log(f"proximo refresh em {espera:.1f}s")
         time.sleep(espera)
-
 
 if __name__ == "__main__":
     try:
